@@ -94,6 +94,7 @@ jobs:
         run: |
           VERSION=$(awk '/^go / {print $2}' go.mod)
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Go version: $VERSION"
 
       - name: Setup Go
         uses: actions/setup-go@v6
@@ -119,7 +120,17 @@ jobs:
               -w -s -buildid=" \
             -o mihomo-${{ matrix.name }}
 
-          ./mihomo-${{ matrix.name }} -v
+      - name: Verify binary
+        run: |
+          echo "Checking binary:"
+          file mihomo-${{ matrix.name }}
+
+          if [ "${{ matrix.goarch }}" = "amd64" ]; then
+            echo "Running version check:"
+            ./mihomo-${{ matrix.name }} -v
+          else
+            echo "Skipping execution for cross-compiled ${{ matrix.goarch }} binary."
+          fi
 
       - name: Compress
         env:
@@ -151,7 +162,14 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
+
+          echo "Release files:"
+          ls -lh
+
           sha256sum *.tar.gz > SHA256SUMS
+
+          echo "SHA256 checksums:"
+          cat SHA256SUMS
 
       - name: Create release
         env:
