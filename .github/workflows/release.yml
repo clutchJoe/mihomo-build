@@ -9,6 +9,7 @@ on:
         type: string
 
   schedule:
+    # UTC 16:30 = UTC+8 00:30
     - cron: "30 16 * * *"
 
 permissions:
@@ -122,14 +123,17 @@ jobs:
           ./mihomo-${{ matrix.name }} -v || true
 
       - name: Compress
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          gzip -9 mihomo-${{ matrix.name }}
+          tar -czf mihomo-${VERSION}-${{ matrix.name }}.tar.gz \
+            mihomo-${{ matrix.name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: mihomo-${{ matrix.name }}
-          path: mihomo-${{ matrix.name }}.gz
+          path: mihomo-${{ needs.prepare.outputs.version }}-${{ matrix.name }}.tar.gz
 
 
   release:
@@ -149,7 +153,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd artifacts
-          sha256sum * > SHA256SUMS
+          sha256sum *.tar.gz > SHA256SUMS
 
       - name: Create release
         env:
