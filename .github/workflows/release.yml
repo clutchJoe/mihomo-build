@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Mihomo version, e.g. v1.19.26. Leave empty for latest."
+        description: "Mihomo version, e.g. v1.19.30. Leave empty for latest."
         required: false
         type: string
 
@@ -15,6 +15,9 @@ on:
 permissions:
   contents: write
 
+env:
+  GO_VERSION: "1.26"
+
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -22,6 +25,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_build: ${{ steps.check.outputs.should_build }}
+      buildtime: ${{ steps.buildinfo.outputs.buildtime }}
 
     steps:
       - name: Get upstream version
@@ -41,6 +45,14 @@ jobs:
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "Upstream version: $VERSION"
 
+      - name: Set build information
+        id: buildinfo
+        run: |
+          BUILDTIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          echo "buildtime=$BUILDTIME" >> "$GITHUB_OUTPUT"
+          echo "Build time: $BUILDTIME"
+
       - name: Check existing release
         id: check
         env:
@@ -56,6 +68,7 @@ jobs:
             echo "Release $VERSION does not exist."
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
+
 
   build:
     needs: prepare
@@ -83,24 +96,23 @@ jobs:
 
     steps:
       - name: Checkout Mihomo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
         with:
           repository: MetaCubeX/mihomo
           ref: ${{ needs.prepare.outputs.version }}
           fetch-depth: 1
 
-      - name: Read Go version
-        id: go
-        run: |
-          VERSION=$(awk '/^go / {print $2}' go.mod)
-          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Go version: $VERSION"
-
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c
         with:
-          go-version: ${{ steps.go.outputs.version }}
-          cache: true
+          go-download-base-url: "https://github.com/MetaCubeX/go/releases/download/build"
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Verify Go toolchain
+        run: |
+          go version
+          go env GOROOT
+          go env GOVERSION
 
       - name: Build
         env:
@@ -108,13 +120,14 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
           GOAMD64: ${{ matrix.goamd64 }}
           CGO_ENABLED: 0
+          GOTOOLCHAIN: local
           VERSION: ${{ needs.prepare.outputs.version }}
+          BUILDTIME: ${{ needs.prepare.outputs.buildtime }}
         run: |
-          BUILDTIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-
           go build \
             -trimpath \
             -ldflags "\
+              -extldflags --static \
               -X github.com/metacubex/mihomo/constant.Version=${VERSION} \
               -X github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME} \
               -w -s -buildid=" \
@@ -122,13 +135,15 @@ jobs:
 
       - name: Verify binary
         run: |
-          echo "Checking binary:"
+          echo "Binary information:"
           file mihomo-${{ matrix.name }}
 
           if [ "${{ matrix.goarch }}" = "amd64" ]; then
-            echo "Running version check:"
+            echo
+            echo "Mihomo version:"
             ./mihomo-${{ matrix.name }} -v
           else
+            echo
             echo "Skipping execution for cross-compiled ${{ matrix.goarch }} binary."
           fi
 
@@ -140,10 +155,11 @@ jobs:
             mihomo-${{ matrix.name }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: mihomo-${{ matrix.name }}
           path: mihomo-${{ needs.prepare.outputs.version }}-${{ matrix.name }}.tar.gz
+
 
   release:
     needs:
@@ -154,7 +170,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -168,8 +184,47 @@ jobs:
 
           sha256sum *.tar.gz > SHA256SUMS
 
+          echo
           echo "SHA256 checksums:"
           cat SHA256SUMS
+
+      - name: Generate release notes
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          BUILDTIME: ${{ needs.prepare.outputs.buildtime }}
+        run: |
+          cat > release-notes.md <<EOF
+          Custom build of [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) ${VERSION}.
+
+          ## Build information
+
+          | Item | Value |
+          | --- | --- |
+          | Mihomo version | ${VERSION} |
+          | Go version | Go ${GO_VERSION} |
+          | Go toolchain | MetaCubeX/go |
+          | CGO | Disabled |
+          | Build tags | None |
+          | Tailscale | Not included |
+          | gVisor build tag | Not enabled |
+          | Build time | ${BUILDTIME} |
+          | Source | MetaCubeX/mihomo ${VERSION} |
+          | Packaging | tar.gz |
+
+          ## Builds
+
+          - Linux AMD64 (x86-64 v1)
+          - Linux AMD64 v3
+          - Linux ARM64
+
+          ## Notes
+
+          This build follows the Mihomo upstream build environment where practical, including the MetaCubeX Go toolchain and static linking settings.
+
+          Unlike the official standard Mihomo build, this build intentionally does **not** enable the \`with_gvisor\` build tag in order to exclude Tailscale-related functionality.
+
+          SHA256 checksums are included in \`SHA256SUMS\`.
+          EOF
 
       - name: Create release
         env:
@@ -180,4 +235,4 @@ jobs:
             artifacts/* \
             --repo "${{ github.repository }}" \
             --title "$VERSION" \
-            --notes "Automated build of MetaCubeX/mihomo $VERSION without optional build tags."
+            --notes-file release-notes.md
