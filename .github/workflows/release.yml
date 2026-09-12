@@ -1,0 +1,163 @@
+name: Build Mihomo
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Mihomo version, e.g. v1.19.26. Leave empty for latest."
+        required: false
+        type: string
+
+  schedule:
+    - cron: "23 3 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      should_build: ${{ steps.check.outputs.should_build }}
+
+    steps:
+      - name: Get upstream version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            VERSION="$INPUT_VERSION"
+          else
+            VERSION=$(curl -fsSL \
+              https://api.github.com/repos/MetaCubeX/mihomo/releases/latest \
+              | jq -r '.tag_name')
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Upstream version: $VERSION"
+
+      - name: Check existing release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if gh release view "$VERSION" \
+            --repo "${{ github.repository }}" >/dev/null 2>&1; then
+
+            echo "Release $VERSION already exists."
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $VERSION does not exist."
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+
+  build:
+    needs: prepare
+
+    if: needs.prepare.outputs.should_build == 'true'
+
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            goamd64: v1
+            name: linux-amd64
+
+          - goos: linux
+            goarch: amd64
+            goamd64: v3
+            name: linux-amd64-v3
+
+          - goos: linux
+            goarch: arm64
+            name: linux-arm64
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Mihomo
+        uses: actions/checkout@v5
+        with:
+          repository: MetaCubeX/mihomo
+          ref: ${{ needs.prepare.outputs.version }}
+          fetch-depth: 1
+
+      - name: Read Go version
+        id: go
+        run: |
+          VERSION=$(awk '/^go / {print $2}' go.mod)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: ${{ steps.go.outputs.version }}
+          cache: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOAMD64: ${{ matrix.goamd64 }}
+          CGO_ENABLED: 0
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          BUILDTIME=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+
+          go build \
+            -trimpath \
+            -ldflags "\
+              -X github.com/metacubex/mihomo/constant.Version=${VERSION} \
+              -X github.com/metacubex/mihomo/constant.BuildTime=${BUILDTIME} \
+              -w -s -buildid=" \
+            -o mihomo-${{ matrix.name }}
+
+          ./mihomo-${{ matrix.name }} -v || true
+
+      - name: Compress
+        run: |
+          gzip -9 mihomo-${{ matrix.name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mihomo-${{ matrix.name }}
+          path: mihomo-${{ matrix.name }}.gz
+
+
+  release:
+    needs:
+      - prepare
+      - build
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Generate checksums
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          gh release create "$VERSION" \
+            artifacts/* \
+            --repo "${{ github.repository }}" \
+            --title "$VERSION" \
+            --notes "Automated build of MetaCubeX/mihomo $VERSION without optional build tags."
