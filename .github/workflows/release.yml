@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Mihomo version, e.g. v1.19.30. Leave empty for latest."
+        description: "Mihomo version, e.g. v1.19.31. Leave empty for latest."
         required: false
         type: string
 
@@ -125,6 +125,7 @@ jobs:
           BUILDTIME: ${{ needs.prepare.outputs.buildtime }}
         run: |
           go build \
+            -tags "no_easytier" \
             -trimpath \
             -ldflags "\
               -extldflags --static \
@@ -204,8 +205,9 @@ jobs:
           | Go version | Go ${GO_VERSION} |
           | Go toolchain | MetaCubeX/go |
           | CGO | Disabled |
-          | Build tags | None |
+          | Build tags | \`no_easytier\` |
           | Tailscale | Not included |
+          | EasyTier | Not included |
           | gVisor build tag | Not enabled |
           | Build time | ${BUILDTIME} |
           | Source | MetaCubeX/mihomo ${VERSION} |
@@ -221,7 +223,10 @@ jobs:
 
           This build follows the Mihomo upstream build environment where practical, including the MetaCubeX Go toolchain and static linking settings.
 
-          Unlike the official standard Mihomo build, this build intentionally does **not** enable the \`with_gvisor\` build tag in order to exclude Tailscale-related functionality.
+          Differences from the official standard Mihomo build:
+
+          - \`with_gvisor\` is not enabled, excluding Tailscale-related functionality.
+          - \`no_easytier\` is enabled, excluding EasyTier-related functionality.
 
           SHA256 checksums are included in \`SHA256SUMS\`.
           EOF
