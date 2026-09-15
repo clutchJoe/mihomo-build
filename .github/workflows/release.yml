@@ -8,6 +8,12 @@ on:
         required: false
         type: string
 
+      force_rebuild:
+        description: "Rebuild and replace the release if it already exists."
+        required: false
+        default: false
+        type: boolean
+
   schedule:
     # UTC 16:30 = UTC+8 00:30
     - cron: "30 16 * * *"
@@ -25,13 +31,13 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       should_build: ${{ steps.check.outputs.should_build }}
+      release_exists: ${{ steps.check.outputs.release_exists }}
       buildtime: ${{ steps.buildinfo.outputs.buildtime }}
 
     steps:
       - name: Get upstream version
         id: version
         env:
-          GH_TOKEN: ${{ github.token }}
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [ -n "$INPUT_VERSION" ]; then
@@ -58,14 +64,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
+          FORCE_REBUILD: ${{ inputs.force_rebuild }}
         run: |
           if gh release view "$VERSION" \
             --repo "${{ github.repository }}" >/dev/null 2>&1; then
 
             echo "Release $VERSION already exists."
-            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            echo "release_exists=true" >> "$GITHUB_OUTPUT"
+
+            if [ "$FORCE_REBUILD" = "true" ]; then
+              echo "Force rebuild enabled."
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "Skipping existing release."
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+            fi
           else
             echo "Release $VERSION does not exist."
+            echo "release_exists=false" >> "$GITHUB_OUTPUT"
             echo "should_build=true" >> "$GITHUB_OUTPUT"
           fi
 
@@ -230,6 +246,18 @@ jobs:
 
           SHA256 checksums are included in \`SHA256SUMS\`.
           EOF
+
+      - name: Replace existing release
+        if: needs.prepare.outputs.release_exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          echo "Deleting existing release $VERSION..."
+
+          gh release delete "$VERSION" \
+            --repo "${{ github.repository }}" \
+            --yes
 
       - name: Create release
         env:
